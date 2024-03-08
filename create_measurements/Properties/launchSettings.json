@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "create_measurements": {
+      "commandName": "Project",
+      "commandLineArgs": "10000"
+    }
+  }
+}
