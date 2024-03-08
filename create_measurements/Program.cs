@@ -2,17 +2,11 @@
 
 namespace create_measurements;
 
-public class WeatherStation
+public class WeatherStation(string city, double meanTemperature)
 {
     private static readonly IEnumerator<double> rng = NextGaussianEnumerator();
-    public readonly string City;
-    public readonly double MeanTemperature;
-
-    public WeatherStation(string city, double meanTemperature)
-    {
-        City = city;
-        MeanTemperature = meanTemperature;
-    }
+    public readonly string City = city;
+    public readonly double MeanTemperature = meanTemperature;
 
     public double Measurement() => Math.Round(MeanTemperature + NextGaussian() * 10.0, 1);
 
