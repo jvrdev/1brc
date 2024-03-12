@@ -100,6 +100,56 @@ public class CalculateMetrics
         return Task.CompletedTask;
     }
 
+    public readonly record struct Page(byte[] Bytes, int Length);
+
+    public static async Task MmfStringProducerConsumer(string filePath)
+    {
+        using var queue = new BlockingCollection<Page>(4);
+
+        var producer = Task.Run(() =>
+        {
+            using var file = MemoryMappedFile.CreateFromFile(filePath, FileMode.Open);
+            using var accessor = file.CreateViewAccessor();
+            var capacity = accessor.Capacity;
+            var offset = 3L;
+
+            while (capacity - offset > 0)
+            {
+                var bytes = new byte[1024 * 1024];
+                var readBytes = accessor.ReadArray(offset, bytes, 0, (int)Math.Min(bytes.LongLength, capacity - offset));
+                var readUpToEol = new ReadOnlySpan<byte>(bytes, 0, readBytes).LastIndexOf(eolBytes);
+                if (readUpToEol > 0)
+                {
+                    offset += readUpToEol + eolBytes.Length;
+                    queue.Add(new Page(bytes, readUpToEol + eolBytes.Length));
+
+                }
+                else
+                {
+                    break;
+                }
+            };
+
+            queue.CompleteAdding();
+        });
+
+        var consumers = Enumerable.Range(0, 4)
+            .Select(_ =>
+                Task.Run(() =>
+                {
+                    var dst = new ConcurrentDictionary<string, CityMeasurements>();
+
+                    foreach (var page in queue.GetConsumingEnumerable())
+                    { 
+                        CalcString(page.Bytes, page.Length, dst);
+                    }
+
+                    PrintResultsString(dst);
+                }));
+
+        await Task.WhenAll(consumers.Append(producer));
+    }
+
     private static void CalcBytes(byte[] bytes, int length, IDictionary<byte[], CityMeasurements> table)
     {
         var left = 0;
@@ -173,7 +223,7 @@ public class Program
         //await CalculateMetrics<ReadOnlyMemory<char>>.PrintCalculatedMetricsString(filePath);
         //await CalculateMetrics<ReadOnlyMemory<char>>.BlockingCollection(filePath);
         //await CalculateMetrics.MmfBytes(filePath);
-        await CalculateMetrics.MmfString(filePath);
+        await CalculateMetrics.MmfStringProducerConsumer(filePath);
 
         return 0;
     }
