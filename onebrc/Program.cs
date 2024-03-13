@@ -1,5 +1,4 @@
 ﻿using System.Collections.Concurrent;
-using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO.MemoryMappedFiles;
 using System.Text;
@@ -33,15 +32,15 @@ public class ByteArrayComparer : IEqualityComparer<byte[]>
     public bool Equals(byte[]? x, byte[]? y)
         => x.SequenceEqual(y);
 
-    public int GetHashCode([DisallowNull] byte[] x)
-        => x.Aggregate(0, (x, y) => HashCode.Combine(x, y));
+    public int GetHashCode(byte[] x)
+        => x.Aggregate(0, HashCode.Combine);
 }
 
 public class CalculateMetrics
 {
 
     public static readonly byte[] eolBytes = Encoding.UTF8.GetBytes(Environment.NewLine);
-    public static readonly byte[] separatorBytes = Encoding.UTF8.GetBytes(";");
+    public static readonly byte[] separatorBytes = ";"u8.ToArray();
 
     public static Task MmfBytes(string filePath)
     {
@@ -101,11 +100,13 @@ public class CalculateMetrics
     }
 
     public readonly record struct Page(byte[] Bytes, int Length);
+    public readonly record struct Page2(long Start, int Length);
 
     public static async Task MmfStringProducerConsumer(string filePath)
     {
-        using var queue = new BlockingCollection<Page>(4);
-
+        var cpuCount = Environment.ProcessorCount;
+        using var queue = new BlockingCollection<Page>(Environment.ProcessorCount);
+        
         var producer = Task.Run(() =>
         {
             using var file = MemoryMappedFile.CreateFromFile(filePath, FileMode.Open);
@@ -133,7 +134,7 @@ public class CalculateMetrics
             queue.CompleteAdding();
         });
 
-        var consumers = Enumerable.Range(0, 4)
+        var consumers = Enumerable.Range(0, 10)
             .Select(_ =>
                 Task.Run(() =>
                 {
@@ -142,6 +143,64 @@ public class CalculateMetrics
                     foreach (var page in queue.GetConsumingEnumerable())
                     { 
                         CalcString(page.Bytes, page.Length, dst);
+                    }
+
+                    PrintResultsString(dst);
+                }));
+
+        await Task.WhenAll(consumers.Append(producer));
+    }
+    
+    public static async Task MmfStringProducerConsumer2(string filePath)
+    {
+        var cpuCount = Environment.ProcessorCount;
+        using var queue = new BlockingCollection<Page2>(Environment.ProcessorCount);
+        using var file = MemoryMappedFile.CreateFromFile(filePath, FileMode.Open);
+        using var accessor = file.CreateViewAccessor();
+        
+        var producer = Task.Run(() =>
+        {
+            var capacity = accessor.Capacity;
+            var offset = 3L;
+
+            var eolWindow = new byte[eolBytes.Length];
+            while (capacity - offset > 0)
+            {
+                var count = (int)Math.Min(1024 * 1024, capacity - offset);
+                var readUpToEol = offset + count - eolWindow.Length;
+                for (; readUpToEol >= offset; readUpToEol--)
+                {
+                    accessor.ReadArray(readUpToEol, eolWindow, 0, eolWindow.Length);
+                    if (eolWindow.SequenceEqual(eolBytes))
+                    {
+                        break;
+                    }
+                }
+                if (readUpToEol > offset)
+                {
+                    queue.Add(new Page2(offset, (int)(readUpToEol - offset) + eolBytes.Length));
+                    offset = readUpToEol + eolBytes.Length;
+                }
+                else
+                {
+                    break;
+                }
+            };
+
+            queue.CompleteAdding();
+        });
+
+        var consumers = Enumerable.Range(0, 10)
+            .Select(_ =>
+                Task.Run(() =>
+                {
+                    var dst = new ConcurrentDictionary<string, CityMeasurements>();
+                    var bytes = new byte[1024 * 1024];
+
+                    foreach (var page in queue.GetConsumingEnumerable())
+                    { 
+                        var readBytes = accessor.ReadArray(page.Start, bytes, 0, page.Length);
+                        CalcString(bytes, page.Length, dst);
                     }
 
                     PrintResultsString(dst);
@@ -223,7 +282,7 @@ public class Program
         //await CalculateMetrics<ReadOnlyMemory<char>>.PrintCalculatedMetricsString(filePath);
         //await CalculateMetrics<ReadOnlyMemory<char>>.BlockingCollection(filePath);
         //await CalculateMetrics.MmfBytes(filePath);
-        await CalculateMetrics.MmfStringProducerConsumer(filePath);
+        await CalculateMetrics.MmfStringProducerConsumer2(filePath);
 
         return 0;
     }
