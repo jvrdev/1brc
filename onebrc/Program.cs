@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Globalization;
 using System.IO.MemoryMappedFiles;
 using System.Text;
+using U8;
 
 namespace onebrc;
 
@@ -14,7 +15,7 @@ public class CityMeasurements
     public int SampleCount;
 
     public float Mean => Total / SampleCount;
-    public string Summary(string city) => $"{city}={Min:F1}/{Mean:F1}/{Max:F1}";
+    public string Summary(U8String city) => $"{city}={Min:F1}/{Mean:F1}/{Max:F1}";
 
 
     public CityMeasurements(float measurement)
@@ -102,7 +103,7 @@ public class CalculateMetrics
         using var accessor = file.CreateViewAccessor();
         var capacity = accessor.Capacity;
         var offset = 3L;
-        var dst = new ConcurrentDictionary<string, CityMeasurements>();
+        var dst = new ConcurrentDictionary<U8String, CityMeasurements>();
         while (capacity - offset > 0)
         {
             var readBytes = accessor.ReadArray(offset, bytes, 0, (int)Math.Min(bytes.LongLength, capacity - offset));
@@ -162,7 +163,7 @@ public class CalculateMetrics
             .Select(_ =>
                 Task.Run(() =>
                 {
-                    var dst = new ConcurrentDictionary<string, CityMeasurements>();
+                    var dst = new ConcurrentDictionary<U8String, CityMeasurements>();
 
                     foreach (var page in queue.GetConsumingEnumerable())
                     { 
@@ -178,7 +179,7 @@ public class CalculateMetrics
     public static async Task MmfStringProducerConsumer2(string filePath)
     {
         var cpuCount = Environment.ProcessorCount;
-        const int pageSize = 1024 * 1024;
+        const int pageSize = 32 * 1024;
         using var queue = new BlockingCollection<Page2>(cpuCount);
         using var file = MemoryMappedFile.CreateFromFile(filePath, FileMode.Open);
         using var accessor = file.CreateViewAccessor();
@@ -219,7 +220,7 @@ public class CalculateMetrics
             .Select(_ =>
                 Task.Run(() =>
                 {
-                    var dst = new Dictionary<string, CityMeasurements>();
+                    var dst = new Dictionary<U8String, CityMeasurements>();
                     var bytes = new byte[pageSize];
 
                     foreach (var page in queue.GetConsumingEnumerable())
@@ -265,14 +266,14 @@ public class CalculateMetrics
         while (left < length);
     }
 
-    private static void CalcString(byte[] bytes, int length, IDictionary<string, CityMeasurements> table)
+    private static void CalcString(byte[] bytes, int length, IDictionary<U8String, CityMeasurements> table)
     {
         var left = 0;
         do
         {
             var buffer = new ReadOnlySpan<byte>(bytes, left, length - left);
             var indexOfSeparator = buffer.IndexOf(separatorBytes);
-            var city = Encoding.UTF8.GetString(buffer[0..indexOfSeparator]);
+            var city = U8String.Create(buffer[0..indexOfSeparator]);
             var indexOfEol = buffer[(indexOfSeparator + 1)..].IndexOf(eolBytes);
             //var measurementString = Encoding.UTF8.GetString(buffer[(indexOfSeparator + 1)..(indexOfSeparator + indexOfEol + 1)]);
             _ = csFastFloat.FastFloatParser.TryParseFloat(buffer[(indexOfSeparator + 1)..(indexOfSeparator + indexOfEol + 1)], out var measurement, styles: NumberStyles.AllowDecimalPoint);
@@ -296,7 +297,7 @@ public class CalculateMetrics
     //    Console.WriteLine("}");
     //}
 
-    public static void PrintResultsString(IDictionary<string, CityMeasurements> table)
+    public static void PrintResultsString(IDictionary<U8String, CityMeasurements> table)
     {
         Console.Write("{");
         Console.Write(string.Join(", ", table.OrderBy(x => x.Key).Select(x => x.Value.Summary(x.Key))));
