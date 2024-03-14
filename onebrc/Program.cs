@@ -1,4 +1,5 @@
-﻿using System.Collections.Concurrent;
+﻿using System.Collections;
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.IO.MemoryMappedFiles;
 using System.Text;
@@ -154,7 +155,8 @@ public class CalculateMetrics
     public static async Task MmfStringProducerConsumer2(string filePath)
     {
         var cpuCount = Environment.ProcessorCount;
-        using var queue = new BlockingCollection<Page2>(Environment.ProcessorCount);
+        const int pageSize = 1024 * 1024;
+        using var queue = new BlockingCollection<Page2>(cpuCount);
         using var file = MemoryMappedFile.CreateFromFile(filePath, FileMode.Open);
         using var accessor = file.CreateViewAccessor();
         
@@ -166,7 +168,7 @@ public class CalculateMetrics
             var eolWindow = new byte[eolBytes.Length];
             while (capacity - offset > 0)
             {
-                var count = (int)Math.Min(1024 * 1024, capacity - offset);
+                var count = (int)Math.Min(pageSize, capacity - offset);
                 var readUpToEol = offset + count - eolWindow.Length;
                 for (; readUpToEol >= offset; readUpToEol--)
                 {
@@ -190,12 +192,12 @@ public class CalculateMetrics
             queue.CompleteAdding();
         });
 
-        var consumers = Enumerable.Range(0, 10)
+        var consumers = Enumerable.Range(0, cpuCount)
             .Select(_ =>
                 Task.Run(() =>
                 {
-                    var dst = new ConcurrentDictionary<string, CityMeasurements>();
-                    var bytes = new byte[1024 * 1024];
+                    var dst = new Dictionary<string, CityMeasurements>();
+                    var bytes = new byte[pageSize];
 
                     foreach (var page in queue.GetConsumingEnumerable())
                     { 
@@ -203,10 +205,16 @@ public class CalculateMetrics
                         CalcString(bytes, page.Length, dst);
                     }
 
-                    PrintResultsString(dst);
-                }));
-
-        await Task.WhenAll(consumers.Append(producer));
+                    return dst;
+                }))
+            .ToList();
+        await producer;
+        var dsts = await Task.WhenAll(consumers);
+        var dst = dsts
+            .SelectMany(x => x)
+            .ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+        
+        PrintResultsString(dst);
     }
 
     private static void CalcBytes(byte[] bytes, int length, IDictionary<byte[], CityMeasurements> table)
