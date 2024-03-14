@@ -10,18 +10,27 @@ public class CityMeasurements
 {
     public float Max;
     public float Min;
-    public float Mean => Total / SampleCount;
+    public float Total;
+    public int SampleCount;
 
+    public float Mean => Total / SampleCount;
     public string Summary(string city) => $"{city}={Min:F1}/{Mean:F1}/{Max:F1}";
 
-    public float Total;
-    public int SampleCount = 1;
 
     public CityMeasurements(float measurement)
     {
         Max = measurement;
         Min = measurement;
         Total = measurement;
+        SampleCount = 1;
+    }
+
+    public CityMeasurements(float max, float min, float total, int sampleCount)
+    {
+        Max = max;
+        Min = min;
+        Total = total;
+        SampleCount = sampleCount;
     }
 
     public void AddMeasurement(float measurement)
@@ -31,14 +40,14 @@ public class CityMeasurements
         Total += measurement;
         SampleCount++;
     }
-    
-    public static CityMeasurements operator +(CityMeasurements left, CityMeasurements right)
+
+    public static CityMeasurements Combine(IEnumerable<CityMeasurements> measurements)
     {
-        return new CityMeasurements
-        {
-            Total = left.Total + right.Total,
-            SampleCount = left.SampleCount + right.SampleCount
-        };
+        return new CityMeasurements(
+            measurements.Max(x => x.Max),
+            measurements.Min(x => x.Min),
+            measurements.Sum(x => x.Total),
+            measurements.Sum(x => x.SampleCount));
     }
 }
 
@@ -57,34 +66,34 @@ public class CalculateMetrics
     public static readonly byte[] eolBytes = Encoding.UTF8.GetBytes(Environment.NewLine);
     public static readonly byte[] separatorBytes = ";"u8.ToArray();
 
-    public static Task MmfBytes(string filePath)
-    {
-        var bytes = new byte[512 * 1024];
-        var eolBytes = Encoding.UTF8.GetBytes(Environment.NewLine);
-        using var file = MemoryMappedFile.CreateFromFile(filePath, FileMode.Open);
-        using var accessor = file.CreateViewAccessor();
-        var capacity = accessor.Capacity;
-        var offset = 3L;
-        var dst = new ConcurrentDictionary<byte[], CityMeasurements>(new ByteArrayComparer());
-        while (capacity - offset > 0)
-        {
-            var readBytes = accessor.ReadArray(offset, bytes, 0, (int)Math.Min(bytes.LongLength, capacity - offset));
-            var readUpToEol = new ReadOnlySpan<byte>(bytes, 0, readBytes).LastIndexOf(eolBytes);
-            if (readUpToEol > 0)
-            {
-                offset += readUpToEol + eolBytes.Length;
-                CalcBytes(bytes, readUpToEol + eolBytes.Length, dst);
-            }
-            else
-            {
-                break;
-            }
-        };
+    //public static Task MmfBytes(string filePath)
+    //{
+    //    var bytes = new byte[512 * 1024];
+    //    var eolBytes = Encoding.UTF8.GetBytes(Environment.NewLine);
+    //    using var file = MemoryMappedFile.CreateFromFile(filePath, FileMode.Open);
+    //    using var accessor = file.CreateViewAccessor();
+    //    var capacity = accessor.Capacity;
+    //    var offset = 3L;
+    //    var dst = new ConcurrentDictionary<byte[], CityMeasurements>(new ByteArrayComparer());
+    //    while (capacity - offset > 0)
+    //    {
+    //        var readBytes = accessor.ReadArray(offset, bytes, 0, (int)Math.Min(bytes.LongLength, capacity - offset));
+    //        var readUpToEol = new ReadOnlySpan<byte>(bytes, 0, readBytes).LastIndexOf(eolBytes);
+    //        if (readUpToEol > 0)
+    //        {
+    //            offset += readUpToEol + eolBytes.Length;
+    //            CalcBytes(bytes, readUpToEol + eolBytes.Length, dst);
+    //        }
+    //        else
+    //        {
+    //            break;
+    //        }
+    //    };
 
-        PrintResults(dst);
+    //    PrintResults(dst);
 
-        return Task.CompletedTask;
-    }
+    //    return Task.CompletedTask;
+    //}
 
     public static Task MmfString(string filePath)
     {
@@ -226,7 +235,8 @@ public class CalculateMetrics
         var dsts = await Task.WhenAll(consumers);
         var dst = dsts
             .SelectMany(x => x)
-            .ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+            .GroupBy(kvp => kvp.Key)
+            .ToDictionary(g => g.Key, g => CityMeasurements.Combine(g.Select(h => h.Value)));
         
         PrintResultsString(dst);
     }
@@ -279,12 +289,12 @@ public class CalculateMetrics
         while (left < length);
     }
 
-    public static void PrintResults<T>(IDictionary<T, CityMeasurements> table)
-    {
-        Console.Write("{");
-        Console.Write(string.Join(", ", table.OrderBy(x => x.Key).Select(x => x.Value.Summary(x.Key))));
-        Console.WriteLine("}");
-    }
+    //public static void PrintResults<T>(IDictionary<T, CityMeasurements> table)
+    //{
+    //    Console.Write("{");
+    //    Console.Write(string.Join(", ", table.OrderBy(x => x.Key).Select(x => x.Value.Summary(x.Key))));
+    //    Console.WriteLine("}");
+    //}
 
     public static void PrintResultsString(IDictionary<string, CityMeasurements> table)
     {
