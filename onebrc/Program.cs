@@ -6,18 +6,23 @@ using System.Text;
 
 namespace onebrc;
 
-public class CityMeasurements(float measurement)
+public class CityMeasurements
 {
-    public float Max = measurement;
-    public float Min = measurement;
+    public float Max;
+    public float Min;
     public float Mean => Total / SampleCount;
 
     public string Summary(string city) => $"{city}={Min:F1}/{Mean:F1}/{Max:F1}";
-    public string Summary(byte[] city) => $"{Encoding.UTF8.GetString(city)}={Min:F1}/{Mean:F1}/{Max:F1}";
-    public string Summary<T>(T city) => throw new NotImplementedException();
 
-    public float Total = measurement;
+    public float Total;
     public int SampleCount = 1;
+
+    public CityMeasurements(float measurement)
+    {
+        Max = measurement;
+        Min = measurement;
+        Total = measurement;
+    }
 
     public void AddMeasurement(float measurement)
     {
@@ -25,6 +30,15 @@ public class CityMeasurements(float measurement)
         Min = Math.Min(measurement, Min);
         Total += measurement;
         SampleCount++;
+    }
+    
+    public static CityMeasurements operator +(CityMeasurements left, CityMeasurements right)
+    {
+        return new CityMeasurements
+        {
+            Total = left.Total + right.Total,
+            SampleCount = left.SampleCount + right.SampleCount
+        };
     }
 }
 
