@@ -60,11 +60,11 @@ public class CalculateMetrics
     public static readonly int cpuCount = Environment.ProcessorCount;
     public const int pageSize = 1024 * 1024;
 
-    public readonly record struct Page2(long Start, int Length);
+    public readonly record struct Page(long Start, int Length);
 
     public static async Task MmfStringProducerConsumer2(string filePath)
     {
-        using var queue = new BlockingCollection<Page2>(cpuCount);
+        using var queue = new BlockingCollection<Page>(cpuCount);
         using var file = MemoryMappedFile.CreateFromFile(filePath, FileMode.Open);
         using var accessor = file.CreateViewAccessor();
         
@@ -84,16 +84,14 @@ public class CalculateMetrics
         PrintResultsString(dst);
     }
 
-    private static unsafe Dictionary<string, CityMeasurements> ConsumePages(BlockingCollection<Page2> queue, MemoryMappedViewAccessor accessor)
+    private static unsafe Dictionary<string, CityMeasurements> ConsumePages(BlockingCollection<Page> queue, MemoryMappedViewAccessor accessor)
     {
         var dst = new Dictionary<string, CityMeasurements>();
-        var bytes = new byte[pageSize];
 
         byte* pointer = (byte*)0;
         accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref pointer);
         foreach (var page in queue.GetConsumingEnumerable())
-        {
-            //var readBytes = accessor.ReadArray(page.Start, bytes, 0, page.Length);
+        { 
             CalcString(new ReadOnlySpan<byte>(pointer + page.Start, page.Length), dst);
         }
         accessor.SafeMemoryMappedViewHandle.ReleasePointer();
@@ -101,7 +99,7 @@ public class CalculateMetrics
         return dst;
     }
 
-    private static unsafe void ProducePages(BlockingCollection<Page2> queue, MemoryMappedViewAccessor accessor)
+    private static unsafe void ProducePages(BlockingCollection<Page> queue, MemoryMappedViewAccessor accessor)
     {
         var capacity = accessor.Capacity;
         var offset = 3L;
@@ -122,7 +120,7 @@ public class CalculateMetrics
             }
             if (readUpToEol > offset)
             {
-                queue.Add(new Page2(offset, (int)(readUpToEol - offset) + eolBytes.Length));
+                queue.Add(new Page(offset, (int)(readUpToEol - offset) + eolBytes.Length));
                 offset = readUpToEol + eolBytes.Length;
             }
             else
