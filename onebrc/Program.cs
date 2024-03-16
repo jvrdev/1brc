@@ -94,7 +94,7 @@ public class CalculateMetrics
         foreach (var page in queue.GetConsumingEnumerable())
         {
             //var readBytes = accessor.ReadArray(page.Start, bytes, 0, page.Length);
-            CalcString(new ReadOnlySpan<byte>(pointer, page.Length), dst);
+            CalcString(new ReadOnlySpan<byte>(pointer + page.Start, page.Length), dst);
         }
         accessor.SafeMemoryMappedViewHandle.ReleasePointer();
 
@@ -115,7 +115,6 @@ public class CalculateMetrics
             for (; readUpToEol >= offset; readUpToEol--)
             {
                 var eolWindow = new ReadOnlySpan<byte>(pointer + readUpToEol, eolBytes.Length);
-                //accessor.ReadArray(readUpToEol, eolWindow, 0, eolWindow.Length);
                 if (eolWindow.SequenceEqual(eolBytes))
                 {
                     break;
@@ -136,7 +135,7 @@ public class CalculateMetrics
         queue.CompleteAdding();
     }
 
-    private static void CalcString(ReadOnlySpan<byte> page, IDictionary<string, CityMeasurements> table)
+    private static void CalcString(ReadOnlySpan<byte> page, Dictionary<string, CityMeasurements> table)
     {
         var left = 0;
         do
@@ -145,7 +144,6 @@ public class CalculateMetrics
             var indexOfSeparator = buffer.IndexOf(separatorBytes);
             var city = Encoding.UTF8.GetString(buffer[0..indexOfSeparator]);
             var indexOfEol = buffer[(indexOfSeparator + 1)..].IndexOf(eolBytes);
-            //var measurementString = Encoding.UTF8.GetString(buffer[(indexOfSeparator + 1)..(indexOfSeparator + indexOfEol + 1)]);
             _ = csFastFloat.FastFloatParser.TryParseFloat(buffer[(indexOfSeparator + 1)..(indexOfSeparator + indexOfEol + 1)], out var measurement, styles: NumberStyles.AllowDecimalPoint);
             if (table.TryGetValue(city, out var existingMeasurements))
             {
