@@ -1,22 +1,22 @@
 ﻿using System.Diagnostics;
+using System.Globalization;
 
 namespace create_measurements;
 
 public class WeatherStation(string city, double meanTemperature)
 {
-    private static readonly IEnumerator<double> rng = NextGaussianEnumerator();
+    private static readonly IEnumerator<double> Rng = NextGaussianEnumerator();
     public readonly string City = city;
-    public readonly double MeanTemperature = meanTemperature;
 
-    public double Measurement() => Math.Round(MeanTemperature + NextGaussian() * 10.0, 1);
+    public double Measurement() => Math.Round(meanTemperature + NextGaussian() * 10.0, 1);
 
-    public static double NextGaussian()
+    private static double NextGaussian()
     {
-        rng.MoveNext();
-        return rng.Current;
+        Rng.MoveNext();
+        return Rng.Current;
     }
 
-    public static IEnumerator<double> NextGaussianEnumerator()
+    private static IEnumerator<double> NextGaussianEnumerator()
     {
         while (true)
         {
@@ -27,8 +27,8 @@ public class WeatherStation(string city, double meanTemperature)
                 v1 = 2 * rnd.NextDouble() - 1;   // between -1.0 and 1.0
                 v2 = 2 * rnd.NextDouble() - 1;   // between -1.0 and 1.0
                 s = v1 * v1 + v2 * v2;
-            } while (s >= 1 || s == 0);
-            double multiplier = Math.Sqrt(-2 * Math.Log(s) / s);
+            } while (s is >= 1 or 0);
+            var multiplier = Math.Sqrt(-2 * Math.Log(s) / s);
             yield return v1 * multiplier;
             yield return v2 * multiplier;
         }
@@ -461,8 +461,8 @@ public class CreateMeasurements
         var size = int.Parse(args[0]);
         var watch = Stopwatch.StartNew();
 
-        using var writer = new StreamWriter("measurements.txt", false, System.Text.Encoding.UTF8, 512 * 1024);
-        for (int i = 0; i < size; i++)
+        await using var writer = new StreamWriter("measurements.txt", false, System.Text.Encoding.UTF8, 512 * 1024);
+        for (var i = 0; i < size; i++)
         {
             if (i > 0 && i % 50_000_000 == 0)
             {
@@ -470,7 +470,9 @@ public class CreateMeasurements
             }
             var station = WeatherStation.Random();
             await writer.WriteAsync(station.City);
-            await writer.WriteLineAsync(";" + station.Measurement());
+            await writer.WriteAsync(";");
+            await writer.WriteAsync(station.Measurement().ToString("F1", CultureInfo.InvariantCulture));
+            await writer.WriteAsync('\n');
         }
 
         return 0;

@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.IO.MemoryMappedFiles;
+using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace onebrc;
@@ -42,7 +43,7 @@ public class CityMeasurements
         SampleCount++;
     }
 
-    public static CityMeasurements Combine(IEnumerable<CityMeasurements> measurements)
+    public static CityMeasurements Combine(IList<CityMeasurements> measurements)
     {
         return new CityMeasurements(
             measurements.Max(x => x.Max),
@@ -54,23 +55,23 @@ public class CityMeasurements
 
 public class CalculateMetrics
 {
-    public static readonly byte[] eolBytes = Encoding.UTF8.GetBytes(Environment.NewLine);
-    public static readonly byte[] separatorBytes = ";"u8.ToArray();
+    private const byte EolByte = (byte)'\n';
+    private const byte SeparatorByte = (byte)';';
 
-    public static readonly int cpuCount = Environment.ProcessorCount;
-    public const int pageSize = 1024 * 1024;
+    private static readonly int CpuCount = Environment.ProcessorCount;
+    private const int PageSize = 1024 * 1024;
 
-    public readonly record struct Page(long Start, int Length);
+    private readonly record struct Page(long Start, int Length);
 
     public static async Task MmfStringProducerConsumer2(string filePath)
     {
-        using var queue = new BlockingCollection<Page>(cpuCount);
+        using var queue = new BlockingCollection<Page>(CpuCount);
         using var file = MemoryMappedFile.CreateFromFile(filePath, FileMode.Open);
         using var accessor = file.CreateViewAccessor();
         
         var producer = Task.Run(() => ProducePages(queue, accessor));
 
-        var consumers = Enumerable.Range(0, cpuCount)
+        var consumers = Enumerable.Range(0, CpuCount)
             .Select(_ => Task.Run(() => ConsumePages(queue, accessor)))
             .ToList();
 
@@ -79,7 +80,7 @@ public class CalculateMetrics
         var dst = dsts
             .SelectMany(x => x)
             .GroupBy(kvp => kvp.Key)
-            .ToDictionary(g => g.Key, g => CityMeasurements.Combine(g.Select(h => h.Value)));
+            .ToDictionary(g => g.Key, g => CityMeasurements.Combine(g.Select(h => h.Value).ToList()));
         
         PrintResultsString(dst);
     }
@@ -88,7 +89,7 @@ public class CalculateMetrics
     {
         var dst = new Dictionary<string, CityMeasurements>();
 
-        byte* pointer = (byte*)0;
+        var pointer = (byte*)0;
         accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref pointer);
         foreach (var page in queue.GetConsumingEnumerable())
         { 
@@ -103,25 +104,18 @@ public class CalculateMetrics
     {
         var capacity = accessor.Capacity;
         var offset = 3L;
-        byte* pointer = (byte*)0;
+        var pointer = (byte*)0;
         accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref pointer);
 
         while (capacity - offset > 0)
         {
-            var count = (int)Math.Min(pageSize, capacity - offset);
-            var readUpToEol = offset + count - eolBytes.Length;
-            for (; readUpToEol >= offset; readUpToEol--)
-            {
-                var eolWindow = new ReadOnlySpan<byte>(pointer + readUpToEol, eolBytes.Length);
-                if (eolWindow.SequenceEqual(eolBytes))
-                {
-                    break;
-                }
-            }
+            var count = (int)Math.Min(PageSize, capacity - offset);
+            var window = new ReadOnlySpan<byte>(pointer + offset, count - 1);
+            var readUpToEol = window.LastIndexOf(EolByte);
             if (readUpToEol > offset)
             {
-                queue.Add(new Page(offset, (int)(readUpToEol - offset) + eolBytes.Length));
-                offset = readUpToEol + eolBytes.Length;
+                queue.Add(new Page(offset, (int)(readUpToEol - offset) + 1));
+                offset = readUpToEol + 1;
             }
             else
             {
@@ -139,10 +133,10 @@ public class CalculateMetrics
         do
         {
             var buffer = page[left..page.Length];
-            var indexOfSeparator = buffer.IndexOf(separatorBytes);
-            var city = Encoding.UTF8.GetString(buffer[0..indexOfSeparator]);
-            var indexOfEol = buffer[(indexOfSeparator + 1)..].IndexOf(eolBytes);
-            _ = csFastFloat.FastFloatParser.TryParseFloat(buffer[(indexOfSeparator + 1)..(indexOfSeparator + indexOfEol + 1)], out var measurement, styles: NumberStyles.AllowDecimalPoint);
+            var indexOfSeparator = buffer.IndexOf(SeparatorByte);
+            var city = Encoding.UTF8.GetString(buffer[..indexOfSeparator]);
+            var indexOfEol = buffer[(indexOfSeparator + 1)..].IndexOf(EolByte);
+            var measurement = ParseMeasurement(buffer, indexOfSeparator, indexOfEol);
             if (table.TryGetValue(city, out var existingMeasurements))
             {
                 existingMeasurements.AddMeasurement(measurement);
@@ -151,12 +145,19 @@ public class CalculateMetrics
             {
                 table[city] = new CityMeasurements(measurement);
             }
-            left += indexOfSeparator + indexOfEol + eolBytes.Length + 1;
+            left += indexOfSeparator + indexOfEol + 1 + 1;
         }
         while (left < page.Length);
     }
 
-    public static void PrintResultsString(IDictionary<string, CityMeasurements> table)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static float ParseMeasurement(ReadOnlySpan<byte> buffer, int indexOfSeparator, int indexOfEol)
+    {
+        _ = csFastFloat.FastFloatParser.TryParseFloat(buffer[(indexOfSeparator + 1)..(indexOfSeparator + indexOfEol + 1)], out var measurement, styles: NumberStyles.AllowDecimalPoint);
+        return measurement;
+    }
+
+    private static void PrintResultsString(IDictionary<string, CityMeasurements> table)
     {
         Console.Write("{");
         Console.Write(string.Join(", ", table.OrderBy(x => x.Key).Select(x => x.Value.Summary(x.Key))));
