@@ -3,7 +3,6 @@ using System.Collections;
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.IO.MemoryMappedFiles;
-using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace onebrc;
@@ -110,12 +109,12 @@ public class CalculateMetrics
         while (capacity - offset > 0)
         {
             var count = (int)Math.Min(PageSize, capacity - offset);
-            var window = new ReadOnlySpan<byte>(pointer + offset, count - 1);
+            var window = new ReadOnlySpan<byte>(pointer + offset, count);
             var readUpToEol = window.LastIndexOf(EolByte);
-            if (readUpToEol > offset)
+            if (readUpToEol > 0)
             {
-                queue.Add(new Page(offset, (int)(readUpToEol - offset) + 1));
-                offset = readUpToEol + 1;
+                queue.Add(new Page(offset, readUpToEol + 1));
+                offset += readUpToEol + 1;
             }
             else
             {
@@ -132,11 +131,11 @@ public class CalculateMetrics
         var left = 0;
         do
         {
-            var buffer = page[left..page.Length];
+            var buffer = page[left..];
             var indexOfSeparator = buffer.IndexOf(SeparatorByte);
             var city = Encoding.UTF8.GetString(buffer[..indexOfSeparator]);
             var indexOfEol = buffer[(indexOfSeparator + 1)..].IndexOf(EolByte);
-            var measurement = ParseMeasurement(buffer, indexOfSeparator, indexOfEol);
+            _ = csFastFloat.FastFloatParser.TryParseFloat(buffer[(indexOfSeparator + 1)..(indexOfSeparator + indexOfEol + 1)], out var measurement, styles: NumberStyles.AllowDecimalPoint);
             if (table.TryGetValue(city, out var existingMeasurements))
             {
                 existingMeasurements.AddMeasurement(measurement);
@@ -148,13 +147,6 @@ public class CalculateMetrics
             left += indexOfSeparator + indexOfEol + 1 + 1;
         }
         while (left < page.Length);
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static float ParseMeasurement(ReadOnlySpan<byte> buffer, int indexOfSeparator, int indexOfEol)
-    {
-        _ = csFastFloat.FastFloatParser.TryParseFloat(buffer[(indexOfSeparator + 1)..(indexOfSeparator + indexOfEol + 1)], out var measurement, styles: NumberStyles.AllowDecimalPoint);
-        return measurement;
     }
 
     private static void PrintResultsString(IDictionary<string, CityMeasurements> table)
