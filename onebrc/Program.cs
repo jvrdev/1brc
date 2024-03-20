@@ -70,7 +70,7 @@ public class CalculateMetrics
         
         var producer = Task.Run(() => ProducePages(queue, accessor));
 
-        var consumers = Enumerable.Range(0, CpuCount)
+        var consumers = Enumerable.Range(0, CpuCount * 2)
             .Select(_ => Task.Run(() => ConsumePages(queue, accessor)))
             .ToList();
 
@@ -135,7 +135,7 @@ public class CalculateMetrics
             var indexOfSeparator = buffer.IndexOf(SeparatorByte);
             var city = Encoding.UTF8.GetString(buffer[..indexOfSeparator]);
             var indexOfEol = buffer[(indexOfSeparator + 1)..].IndexOf(EolByte);
-            _ = csFastFloat.FastFloatParser.TryParseFloat(buffer[(indexOfSeparator + 1)..(indexOfSeparator + indexOfEol + 1)], out var measurement, styles: NumberStyles.AllowDecimalPoint);
+            var measurement = ParseMeasurement3(buffer[(indexOfSeparator + 1)..(indexOfSeparator + indexOfEol + 1)]);
             if (table.TryGetValue(city, out var existingMeasurements))
             {
                 existingMeasurements.AddMeasurement(measurement);
@@ -147,6 +147,56 @@ public class CalculateMetrics
             left += indexOfSeparator + indexOfEol + 1 + 1;
         }
         while (left < page.Length);
+    }
+
+    private static float ParseMeasurement(ReadOnlySpan<byte> buffer)
+    {
+        _ = csFastFloat.FastFloatParser.TryParseFloat(buffer, out var measurement, styles: NumberStyles.AllowDecimalPoint);
+        
+        return measurement;
+    }
+    
+    private static float ParseMeasurement2(ReadOnlySpan<byte> buffer)
+    {
+        if (buffer[0] == (byte)'-')
+        {
+            return -ParseMeasurement2(buffer[1..]);
+        }
+        
+        var x = 0;
+        foreach (var t in buffer)
+        {
+            if (t != (byte)'.')
+            {
+                x = x * 10 + t - (byte)'0';
+            }
+        }
+
+        return x / 10.0f;
+    }
+    
+    private static float ParseMeasurement3(ReadOnlySpan<byte> buffer)
+    {
+        if (buffer[0] == (byte)'-')
+        {
+            return -ParseMeasurement3(buffer[1..]);
+        }
+
+        const byte zero = (byte)'0';
+
+        return buffer.Length switch
+        {
+            4 => (buffer[0] - zero) * 10 + (buffer[1] - zero) + (buffer[3] - zero) * 0.1f,
+            3 => buffer[0] - zero + (buffer[2] - zero) * 0.1f,
+            _ => throw new Exception()
+        };
+    }
+
+    private static float ParseMeasurement4(ReadOnlySpan<byte> buffer)
+    {
+        float.TryParse(buffer, NumberStyles.AllowDecimalPoint | NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var result);
+
+        return result;
     }
 
     private static void PrintResultsString(IDictionary<string, CityMeasurements> table)
