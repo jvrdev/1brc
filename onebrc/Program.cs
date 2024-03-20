@@ -186,8 +186,8 @@ public class CalculateMetrics
 
         return buffer.Length switch
         {
-            4 => (buffer[0] - zero) * 10 + (buffer[1] - zero) + (buffer[3] - zero) * 0.1f,
-            3 => buffer[0] - zero + (buffer[2] - zero) * 0.1f,
+            4 => buffer[0] * 10 + buffer[1] + buffer[3] * 0.1f - zero * 11.1f ,
+            3 => buffer[0] + buffer[2] * 0.1f - zero * 1.1f ,
             _ => throw new Exception()
         };
     }
