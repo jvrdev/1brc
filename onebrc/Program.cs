@@ -1,9 +1,9 @@
-﻿using System.Collections;
+﻿using System;
+using System.Collections;
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.IO.MemoryMappedFiles;
 using System.Text;
-using U8;
 
 namespace onebrc;
 
@@ -15,7 +15,7 @@ public class CityMeasurements
     public int SampleCount;
 
     public float Mean => Total / SampleCount;
-    public string Summary(U8String city) => $"{city}={Min:F1}/{Mean:F1}/{Max:F1}";
+    public string Summary(string city) => $"{city}={Min:F1}/{Mean:F1}/{Max:F1}";
 
 
     public CityMeasurements(float measurement)
@@ -42,7 +42,7 @@ public class CityMeasurements
         SampleCount++;
     }
 
-    public static CityMeasurements Combine(IEnumerable<CityMeasurements> measurements)
+    public static CityMeasurements Combine(IList<CityMeasurements> measurements)
     {
         return new CityMeasurements(
             measurements.Max(x => x.Max),
@@ -52,252 +52,147 @@ public class CityMeasurements
     }
 }
 
-public class ByteArrayComparer : IEqualityComparer<byte[]>
-{
-    public bool Equals(byte[]? x, byte[]? y)
-        => x.SequenceEqual(y);
-
-    public int GetHashCode(byte[] x)
-        => x.Aggregate(0, HashCode.Combine);
-}
-
 public class CalculateMetrics
 {
+    private const byte EolByte = (byte)'\n';
+    private const byte SeparatorByte = (byte)';';
 
-    public static readonly byte[] eolBytes = Encoding.UTF8.GetBytes(Environment.NewLine);
-    public static readonly byte[] separatorBytes = ";"u8.ToArray();
+    private static readonly int CpuCount = Environment.ProcessorCount;
 
-    //public static Task MmfBytes(string filePath)
-    //{
-    //    var bytes = new byte[512 * 1024];
-    //    var eolBytes = Encoding.UTF8.GetBytes(Environment.NewLine);
-    //    using var file = MemoryMappedFile.CreateFromFile(filePath, FileMode.Open);
-    //    using var accessor = file.CreateViewAccessor();
-    //    var capacity = accessor.Capacity;
-    //    var offset = 3L;
-    //    var dst = new ConcurrentDictionary<byte[], CityMeasurements>(new ByteArrayComparer());
-    //    while (capacity - offset > 0)
-    //    {
-    //        var readBytes = accessor.ReadArray(offset, bytes, 0, (int)Math.Min(bytes.LongLength, capacity - offset));
-    //        var readUpToEol = new ReadOnlySpan<byte>(bytes, 0, readBytes).LastIndexOf(eolBytes);
-    //        if (readUpToEol > 0)
-    //        {
-    //            offset += readUpToEol + eolBytes.Length;
-    //            CalcBytes(bytes, readUpToEol + eolBytes.Length, dst);
-    //        }
-    //        else
-    //        {
-    //            break;
-    //        }
-    //    };
+    private readonly record struct Page(long Start, int Length);
 
-    //    PrintResults(dst);
-
-    //    return Task.CompletedTask;
-    //}
-
-    public static Task MmfString(string filePath)
+    public static async Task MmfStringProducerConsumer2(string filePath)
     {
-        var bytes = new byte[1024 * 1024];
+        using var queue = new BlockingCollection<Page>(CpuCount);
         using var file = MemoryMappedFile.CreateFromFile(filePath, FileMode.Open);
         using var accessor = file.CreateViewAccessor();
+        
+        var producer = Task.Run(() => ProducePages(queue, accessor));
+
+        var consumers = Enumerable.Range(0, CpuCount)
+            .Select(_ => Task.Run(() => ConsumePages(queue, accessor)))
+            .ToList();
+
+        await producer;
+        var dsts = await Task.WhenAll(consumers);
+        var dst = dsts
+            .SelectMany(x => x)
+            .GroupBy(kvp => kvp.Key)
+            .ToDictionary(g => g.Key, g => CityMeasurements.Combine(g.Select(h => h.Value).ToList()));
+        
+        PrintResultsString(dst);
+    }
+
+    private static unsafe Dictionary<string, CityMeasurements> ConsumePages(BlockingCollection<Page> queue, MemoryMappedViewAccessor accessor)
+    {
+        var dst = new Dictionary<string, CityMeasurements>();
+
+        var pointer = (byte*)0;
+        accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref pointer);
+        foreach (var page in queue.GetConsumingEnumerable())
+        { 
+            CalcString(new ReadOnlySpan<byte>(pointer + page.Start, page.Length), dst);
+        }
+        accessor.SafeMemoryMappedViewHandle.ReleasePointer();
+
+        return dst;
+    }
+
+    private static unsafe void ProducePages(BlockingCollection<Page> queue, MemoryMappedViewAccessor accessor)
+    {
         var capacity = accessor.Capacity;
         var offset = 3L;
-        var dst = new ConcurrentDictionary<U8String, CityMeasurements>();
+        var pointer = (byte*)0;
+        accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref pointer);
+
+        var pageSize = capacity / CpuCount;
         while (capacity - offset > 0)
         {
-            var readBytes = accessor.ReadArray(offset, bytes, 0, (int)Math.Min(bytes.LongLength, capacity - offset));
-            var readUpToEol = new ReadOnlySpan<byte>(bytes, 0, readBytes).LastIndexOf(eolBytes);
+            var count = (int)Math.Min(pageSize, capacity - offset);
+            var window = new ReadOnlySpan<byte>(pointer + offset, count);
+            var readUpToEol = window.LastIndexOf(EolByte);
             if (readUpToEol > 0)
             {
-                offset += readUpToEol + eolBytes.Length;
-                CalcString(bytes, readUpToEol + eolBytes.Length, dst);
+                queue.Add(new Page(offset, readUpToEol + 1));
+                offset += readUpToEol + 1;
             }
             else
             {
                 break;
             }
         };
+        accessor.SafeMemoryMappedViewHandle.ReleasePointer();
 
-        PrintResultsString(dst);
-
-        return Task.CompletedTask;
+        queue.CompleteAdding();
     }
 
-    public readonly record struct Page(byte[] Bytes, int Length);
-    public readonly record struct Page2(long Start, int Length);
-
-    public static async Task MmfStringProducerConsumer(string filePath)
+    private static void CalcString(ReadOnlySpan<byte> page, Dictionary<string, CityMeasurements> table)
     {
-        var cpuCount = Environment.ProcessorCount;
-        using var queue = new BlockingCollection<Page>(Environment.ProcessorCount);
-        
-        var producer = Task.Run(() =>
+        var left = 0;
+        do
         {
-            using var file = MemoryMappedFile.CreateFromFile(filePath, FileMode.Open);
-            using var accessor = file.CreateViewAccessor();
-            var capacity = accessor.Capacity;
-            var offset = 3L;
-
-            while (capacity - offset > 0)
+            var buffer = page[left..];
+            var indexOfSeparator = buffer.IndexOf(SeparatorByte);
+            var city = Encoding.UTF8.GetString(buffer[..indexOfSeparator]);
+            var indexOfEol = buffer[(indexOfSeparator + 1)..].IndexOf(EolByte);
+            var measurement = ParseMeasurement3(buffer[(indexOfSeparator + 1)..(indexOfSeparator + indexOfEol + 1)]);
+            if (table.TryGetValue(city, out var existingMeasurements))
             {
-                var bytes = new byte[1024 * 1024];
-                var readBytes = accessor.ReadArray(offset, bytes, 0, (int)Math.Min(bytes.LongLength, capacity - offset));
-                var readUpToEol = new ReadOnlySpan<byte>(bytes, 0, readBytes).LastIndexOf(eolBytes);
-                if (readUpToEol > 0)
-                {
-                    offset += readUpToEol + eolBytes.Length;
-                    queue.Add(new Page(bytes, readUpToEol + eolBytes.Length));
-
-                }
-                else
-                {
-                    break;
-                }
-            };
-
-            queue.CompleteAdding();
-        });
-
-        var consumers = Enumerable.Range(0, 10)
-            .Select(_ =>
-                Task.Run(() =>
-                {
-                    var dst = new ConcurrentDictionary<U8String, CityMeasurements>();
-
-                    foreach (var page in queue.GetConsumingEnumerable())
-                    { 
-                        CalcString(page.Bytes, page.Length, dst);
-                    }
-
-                    PrintResultsString(dst);
-                }));
-
-        await Task.WhenAll(consumers.Append(producer));
+                existingMeasurements.AddMeasurement(measurement);
+            }
+            else
+            {
+                table[city] = new CityMeasurements(measurement);
+            }
+            left += indexOfSeparator + indexOfEol + 1 + 1;
+        }
+        while (left < page.Length);
     }
     
-    public static async Task MmfStringProducerConsumer2(string filePath)
+    private static float ParseMeasurement2(ReadOnlySpan<byte> buffer)
     {
-        var cpuCount = Environment.ProcessorCount;
-        const int pageSize = 32 * 1024;
-        using var queue = new BlockingCollection<Page2>(cpuCount);
-        using var file = MemoryMappedFile.CreateFromFile(filePath, FileMode.Open);
-        using var accessor = file.CreateViewAccessor();
-        
-        var producer = Task.Run(() =>
+        if (buffer[0] == (byte)'-')
         {
-            var capacity = accessor.Capacity;
-            var offset = 3L;
-
-            var eolWindow = new byte[eolBytes.Length];
-            while (capacity - offset > 0)
-            {
-                var count = (int)Math.Min(pageSize, capacity - offset);
-                var readUpToEol = offset + count - eolWindow.Length;
-                for (; readUpToEol >= offset; readUpToEol--)
-                {
-                    accessor.ReadArray(readUpToEol, eolWindow, 0, eolWindow.Length);
-                    if (eolWindow.SequenceEqual(eolBytes))
-                    {
-                        break;
-                    }
-                }
-                if (readUpToEol > offset)
-                {
-                    queue.Add(new Page2(offset, (int)(readUpToEol - offset) + eolBytes.Length));
-                    offset = readUpToEol + eolBytes.Length;
-                }
-                else
-                {
-                    break;
-                }
-            };
-
-            queue.CompleteAdding();
-        });
-
-        var consumers = Enumerable.Range(0, cpuCount)
-            .Select(_ =>
-                Task.Run(() =>
-                {
-                    var dst = new Dictionary<U8String, CityMeasurements>();
-                    var bytes = new byte[pageSize];
-
-                    foreach (var page in queue.GetConsumingEnumerable())
-                    { 
-                        var readBytes = accessor.ReadArray(page.Start, bytes, 0, page.Length);
-                        CalcString(bytes, page.Length, dst);
-                    }
-
-                    return dst;
-                }))
-            .ToList();
-        await producer;
-        var dsts = await Task.WhenAll(consumers);
-        var dst = dsts
-            .SelectMany(x => x)
-            .GroupBy(kvp => kvp.Key)
-            .ToDictionary(g => g.Key, g => CityMeasurements.Combine(g.Select(h => h.Value)));
-        
-        PrintResultsString(dst);
-    }
-
-    private static void CalcBytes(byte[] bytes, int length, IDictionary<byte[], CityMeasurements> table)
-    {
-        var left = 0;
-        do
-        {
-            var buffer = new ReadOnlySpan<byte>(bytes, left, length - left);
-            var indexOfSeparator = buffer.IndexOf(separatorBytes);
-            var city = buffer[0..indexOfSeparator].ToArray();
-            var indexOfEol = buffer[(indexOfSeparator + 1)..].IndexOf(eolBytes);
-            //var measurementString = Encoding.UTF8.GetString(buffer[(indexOfSeparator + 1)..(indexOfSeparator + indexOfEol + 1)]);
-            _ = csFastFloat.FastFloatParser.TryParseFloat(buffer[(indexOfSeparator + 1)..(indexOfSeparator + indexOfEol + 1)], out var measurement, styles: NumberStyles.AllowDecimalPoint);
-            if (table.TryGetValue(city, out var existingMeasurements))
-            {
-                existingMeasurements.AddMeasurement(measurement);
-            }
-            else
-            {
-                table[city] = new CityMeasurements(measurement);
-            }
-            left += indexOfSeparator + indexOfEol + eolBytes.Length + 1;
+            return -ParseMeasurement2(buffer[1..]);
         }
-        while (left < length);
-    }
-
-    private static void CalcString(byte[] bytes, int length, IDictionary<U8String, CityMeasurements> table)
-    {
-        var left = 0;
-        do
+        
+        var x = 0;
+        foreach (var t in buffer)
         {
-            var buffer = new ReadOnlySpan<byte>(bytes, left, length - left);
-            var indexOfSeparator = buffer.IndexOf(separatorBytes);
-            var city = U8String.Create(buffer[0..indexOfSeparator]);
-            var indexOfEol = buffer[(indexOfSeparator + 1)..].IndexOf(eolBytes);
-            //var measurementString = Encoding.UTF8.GetString(buffer[(indexOfSeparator + 1)..(indexOfSeparator + indexOfEol + 1)]);
-            _ = csFastFloat.FastFloatParser.TryParseFloat(buffer[(indexOfSeparator + 1)..(indexOfSeparator + indexOfEol + 1)], out var measurement, styles: NumberStyles.AllowDecimalPoint);
-            if (table.TryGetValue(city, out var existingMeasurements))
+            if (t != (byte)'.')
             {
-                existingMeasurements.AddMeasurement(measurement);
+                x = x * 10 + t - (byte)'0';
             }
-            else
-            {
-                table[city] = new CityMeasurements(measurement);
-            }
-            left += indexOfSeparator + indexOfEol + eolBytes.Length + 1;
         }
-        while (left < length);
+
+        return x / 10.0f;
+    }
+    
+    private static float ParseMeasurement3(ReadOnlySpan<byte> buffer)
+    {
+        if (buffer[0] == (byte)'-')
+        {
+            return -ParseMeasurement3(buffer[1..]);
+        }
+
+        const byte zero = (byte)'0';
+
+        return buffer.Length switch
+        {
+            4 => buffer[0] * 10 + buffer[1] + buffer[3] * 0.1f - zero * 11.1f ,
+            3 => buffer[0] + buffer[2] * 0.1f - zero * 1.1f ,
+            _ => throw new Exception()
+        };
     }
 
-    //public static void PrintResults<T>(IDictionary<T, CityMeasurements> table)
-    //{
-    //    Console.Write("{");
-    //    Console.Write(string.Join(", ", table.OrderBy(x => x.Key).Select(x => x.Value.Summary(x.Key))));
-    //    Console.WriteLine("}");
-    //}
+    private static float ParseMeasurement4(ReadOnlySpan<byte> buffer)
+    {
+        float.TryParse(buffer, NumberStyles.AllowDecimalPoint | NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var result);
 
-    public static void PrintResultsString(IDictionary<U8String, CityMeasurements> table)
+        return result;
+    }
+
+    private static void PrintResultsString(IDictionary<string, CityMeasurements> table)
     {
         Console.Write("{");
         Console.Write(string.Join(", ", table.OrderBy(x => x.Key).Select(x => x.Value.Summary(x.Key))));
@@ -305,20 +200,14 @@ public class CalculateMetrics
     }
 }
 
-
 public class Program
 {
     public static async Task<int> Main(string[] args)
     {
         var filePath = args[0];
 
-        //await CalculateMetrics<ReadOnlyMemory<char>>.PrintCalculatedMetricsString(filePath);
-        //await CalculateMetrics<ReadOnlyMemory<char>>.BlockingCollection(filePath);
-        //await CalculateMetrics.MmfBytes(filePath);
         await CalculateMetrics.MmfStringProducerConsumer2(filePath);
 
         return 0;
     }
-
-
 }
