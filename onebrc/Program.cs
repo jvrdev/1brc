@@ -58,7 +58,6 @@ public class CalculateMetrics
     private const byte SeparatorByte = (byte)';';
 
     private static readonly int CpuCount = Environment.ProcessorCount;
-    private const int PageSize = 1024 * 1024;
 
     private readonly record struct Page(long Start, int Length);
 
@@ -70,7 +69,7 @@ public class CalculateMetrics
         
         var producer = Task.Run(() => ProducePages(queue, accessor));
 
-        var consumers = Enumerable.Range(0, CpuCount * 2)
+        var consumers = Enumerable.Range(0, CpuCount)
             .Select(_ => Task.Run(() => ConsumePages(queue, accessor)))
             .ToList();
 
@@ -106,9 +105,10 @@ public class CalculateMetrics
         var pointer = (byte*)0;
         accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref pointer);
 
+        var pageSize = capacity / CpuCount;
         while (capacity - offset > 0)
         {
-            var count = (int)Math.Min(PageSize, capacity - offset);
+            var count = (int)Math.Min(pageSize, capacity - offset);
             var window = new ReadOnlySpan<byte>(pointer + offset, count);
             var readUpToEol = window.LastIndexOf(EolByte);
             if (readUpToEol > 0)
@@ -207,7 +207,6 @@ public class CalculateMetrics
     }
 }
 
-
 public class Program
 {
     public static async Task<int> Main(string[] args)
@@ -218,6 +217,4 @@ public class Program
 
         return 0;
     }
-
-
 }
