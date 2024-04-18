@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "onebrc": {
+      "commandName": "Project",
+      "commandLineArgs": "../../../../create_measurements/bin/Release/net8.0/measurements.txt"
+    }
+  }
+}
