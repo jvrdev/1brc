@@ -148,13 +148,6 @@ public class CalculateMetrics
         }
         while (left < page.Length);
     }
-
-    private static float ParseMeasurement(ReadOnlySpan<byte> buffer)
-    {
-        _ = csFastFloat.FastFloatParser.TryParseFloat(buffer, out var measurement, styles: NumberStyles.AllowDecimalPoint);
-        
-        return measurement;
-    }
     
     private static float ParseMeasurement2(ReadOnlySpan<byte> buffer)
     {
